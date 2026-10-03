@@ -55,6 +55,8 @@ enum OrderStatus {
   ORDER_CREATED
   ORDER_CONFIRMED
   PICKUP_REQUESTED
+  ASSIGNED
+  ACCEPTED
   PICKED_UP
   AT_SORTING_CENTER
   IN_TRANSIT
@@ -220,25 +222,39 @@ model Customer {
 }
 
 model Rider {
-  id             String            @id @default(cuid())
-  userId         String            @unique
-  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  vehicleType    String            // "BIKE", "CYCLE", "VAN"
-  licenseNumber  String?
-  nidNumber      String?
-  currentZone    ZoneType          @default(INSIDE_DHAKA)
-  status         RiderStatus       @default(AVAILABLE)
-  cashInHand     Decimal           @default(0.00) @db.Decimal(12, 2)
-  assignments    RiderAssignment[]
-  locations      RiderLocation[]
-  deliveryProofs DeliveryProof[]
-  returns        Return[]
-  codCollections CodTransaction[]
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  id                    String            @id @default(cuid())
+  riderId               String?           @unique // Custom format e.g. RDR-092
+  userId                String            @unique
+  user                  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicleType           String            // "BIKE", "CYCLE", "VAN"
+  licenseNumber         String?
+  nidNumber             String?
+  approvalStatus        String            @default("PENDING") // "PENDING", "APPROVED", "REJECTED", "SUSPENDED"
+  nidVerificationStatus String            @default("UNVERIFIED") // "UNVERIFIED", "PENDING", "VERIFIED", "REJECTED"
+  nidVerifiedAt         DateTime?
+  nidVerifiedBy         String?
+  shuftiReference       String?
+  hub                   String?           @default("Inside Dhaka Hub")
+  currentZone           ZoneType          @default(INSIDE_DHAKA)
+  status                RiderStatus       @default(AVAILABLE)
+  cashInHand            Decimal           @default(0.00) @db.Decimal(12, 2)
+  assignments           RiderAssignment[]
+  assignedOrders        Order[]           @relation("AssignedRider")
+  locations             RiderLocation[]
+  deliveryProofs        DeliveryProof[]
+  returns               Return[]
+  codCollections        CodTransaction[]
+  deletedAt             DateTime?
+  deletedBy             String?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
 
   @@index([status])
+  @@index([approvalStatus])
   @@index([currentZone])
+  @@index([riderId])
+  @@index([nidNumber])
+  @@index([deletedAt])
 }
 
 // ------------------------------------------------------------------------------
@@ -382,6 +398,10 @@ model Order {
   // Booking / Order Date (business date)
   orderDate            DateTime          @default(now())
 
+  // Assigned Rider Direct Reference
+  assignedRiderId      String?
+  assignedRider        Rider?            @relation("AssignedRider", fields: [assignedRiderId], references: [id], onDelete: SetNull)
+
   createdAt            DateTime          @default(now())
   updatedAt            DateTime          @updatedAt
 
@@ -396,6 +416,7 @@ model Order {
   @@index([trackingId])
   @@index([orderNumber])
   @@index([merchantId])
+  @@index([assignedRiderId])
   @@index([status])
   @@index([receiverPhone])
   @@index([createdAt])
@@ -677,4 +698,23 @@ model AuditLog {
   @@index([entity, entityId])
   @@index([userId])
   @@index([createdAt])
+}
+
+model NidVerification {
+  id              String    @id @default(cuid())
+  reference       String    @unique
+  nidNumber       String
+  fullName        String?
+  email           String?
+  phone           String?
+  status          String    @default("PENDING") // PENDING, VERIFIED, FAILED
+  verificationUrl String?
+  shuftiReference String?
+  verifiedAt      DateTime?
+  declinedReason  String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([nidNumber])
+  @@index([reference])
 }

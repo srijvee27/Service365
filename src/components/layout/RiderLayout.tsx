@@ -10,6 +10,19 @@ export function RiderLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [riderStatus, setRiderStatus] = useState<"AVAILABLE" | "BUSY" | "OFFLINE">("AVAILABLE");
 
+  const handleStatusChange = async (newStatus: "AVAILABLE" | "BUSY" | "OFFLINE") => {
+    setRiderStatus(newStatus);
+    try {
+      await fetch("/api/rider/status", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+    } catch {
+      // ignore
+    }
+  };
+
   const handleLogout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     router.push("/login");
@@ -30,11 +43,11 @@ export function RiderLayout({ children }: { children: React.ReactNode }) {
           {/* Status selector */}
           <select
             value={riderStatus}
-            onChange={(e) => setRiderStatus(e.target.value as any)}
-            className="bg-slate-800 border border-slate-700 text-xs font-bold rounded-lg px-2.5 py-1 text-emerald-400 focus:outline-none"
+            onChange={(e) => handleStatusChange(e.target.value as any)}
+            className="bg-slate-800 border border-slate-700 text-xs font-bold rounded-lg px-2.5 py-1 text-emerald-400 focus:outline-none cursor-pointer"
           >
             <option value="AVAILABLE">🟢 Available</option>
-            <option value="BUSY">🟡 Busy on Delivery</option>
+            <option value="BUSY">🟡 Busy</option>
             <option value="OFFLINE">⚪ Offline</option>
           </select>
 

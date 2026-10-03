@@ -255,9 +255,15 @@ export async function GET(req: NextRequest) {
     } else if (session.role === Role.CUSTOMER) {
       where.customerId = session.customerId;
     } else if (session.role === Role.RIDER) {
-      where.assignments = {
-        some: { riderId: session.riderId },
-      };
+      let rId = session.riderId;
+      if (!rId) {
+        const r = await prisma.rider.findUnique({ where: { userId: session.id } });
+        rId = r?.id;
+      }
+      where.OR = [
+        { assignedRiderId: rId },
+        { assignments: { some: { riderId: rId } } },
+      ];
     }
 
     if (status && status !== "ALL") {
@@ -279,6 +285,20 @@ export async function GET(req: NextRequest) {
       take: 100,
       include: {
         merchant: true,
+        assignedRider: {
+          include: {
+            user: { select: { name: true, phone: true } },
+          },
+        },
+        assignments: {
+          include: {
+            rider: {
+              include: {
+                user: { select: { name: true, phone: true } },
+              },
+            },
+          },
+        },
       },
     });
 

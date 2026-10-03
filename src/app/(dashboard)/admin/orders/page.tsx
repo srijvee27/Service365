@@ -7,11 +7,16 @@ import {
   Package,
   Search,
   AlertCircle,
+  Bike,
+  UserCheck,
+  CheckCircle2,
 } from "lucide-react";
 import { formatCurrency, formatOrderDate } from "@/lib/utils";
 
 const EDITABLE_STATUSES = [
   { value: "ORDER_CREATED", label: "ORDER CREATED" },
+  { value: "ASSIGNED", label: "ASSIGNED" },
+  { value: "ACCEPTED", label: "ACCEPTED" },
   { value: "PICKED_UP", label: "PICKED UP" },
   { value: "IN_TRANSIT", label: "IN TRANSIT" },
   { value: "OUT_FOR_DELIVERY", label: "OUT FOR DELIVERY" },
@@ -21,6 +26,7 @@ const EDITABLE_STATUSES = [
 
 export default function AdminOrdersPage() {
   const [orders, setOrders] = useState<any[]>([]);
+  const [riders, setRiders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
@@ -28,27 +34,38 @@ export default function AdminOrdersPage() {
   // Edit & Save state
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
   const [selectedStatuses, setSelectedStatuses] = useState<Record<string, string>>({});
+  const [selectedRiders, setSelectedRiders] = useState<Record<string, string>>({});
   const [savingOrderId, setSavingOrderId] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
 
-  const loadOrders = useCallback(async () => {
+  const loadData = useCallback(async () => {
     try {
-      const ordRes = await fetch("/api/orders");
+      const [ordRes, rdrRes] = await Promise.all([
+        fetch("/api/orders"),
+        fetch("/api/admin/riders"),
+      ]);
       const ordData = await ordRes.json();
+      const rdrData = await rdrRes.json();
 
       if (ordData.success && Array.isArray(ordData.data)) {
         setOrders(ordData.data);
       }
+      if (rdrData.success && Array.isArray(rdrData.data)) {
+        setRiders(rdrData.data);
+      }
     } catch (err) {
-      console.error("Failed to load global orders", err);
+      console.error("Failed to load global orders or riders", err);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadOrders();
-  }, [loadOrders]);
+    loadData();
+  }, [loadData]);
+
+  const approvedRiders = riders.filter((r) => r.approvalStatus === "APPROVED");
 
   const getStatusOptions = (currentStatus: string) => {
     const options = [...EDITABLE_STATUSES];
@@ -61,53 +78,62 @@ export default function AdminOrdersPage() {
     return options;
   };
 
-  const handleEdit = (orderId: string, currentStatus: string) => {
+  const handleEdit = (order: any) => {
     setSaveError(null);
-    if (editingOrderId === orderId) {
+    setSaveSuccess(null);
+    if (editingOrderId === order.id) {
       setEditingOrderId(null);
     } else {
-      setEditingOrderId(orderId);
+      setEditingOrderId(order.id);
       setSelectedStatuses((prev) => ({
         ...prev,
-        [orderId]: currentStatus,
+        [order.id]: order.status,
+      }));
+      setSelectedRiders((prev) => ({
+        ...prev,
+        [order.id]: order.assignedRiderId || "",
       }));
     }
   };
 
-  const handleSave = async (orderId: string, currentStatus: string) => {
-    const newStatus = selectedStatuses[orderId] || currentStatus;
+  const handleSave = async (order: any) => {
+    const orderId = order.id;
+    const currentStatus = order.status;
+    const currentRiderId = order.assignedRiderId || "";
 
-    // If user clicks Save without changing anything or without entering edit mode
-    if (editingOrderId !== orderId || newStatus === currentStatus) {
-      setEditingOrderId(null);
-      return;
-    }
+    const newStatus = selectedStatuses[orderId] || currentStatus;
+    const newRiderId = selectedRiders[orderId] !== undefined ? selectedRiders[orderId] : currentRiderId;
+
+    if (editingOrderId !== orderId) return;
 
     setSavingOrderId(orderId);
     setSaveError(null);
+    setSaveSuccess(null);
 
     try {
+      const payload: Record<string, any> = { status: newStatus };
+      if (newRiderId !== undefined && newRiderId !== currentRiderId) {
+        payload.riderId = newRiderId;
+      }
+
       const res = await fetch(`/api/orders/${orderId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
-        throw new Error(data.error?.message || "Failed to update order status. Please try again.");
+        throw new Error(data.error?.message || "Failed to update order. Please try again.");
       }
 
       setEditingOrderId(null);
+      setSaveSuccess(`Order ${order.trackingId} updated successfully.`);
+      setTimeout(() => setSaveSuccess(null), 3000);
 
-      // Optimistically update order in state
-      setOrders((prev) =>
-        prev.map((ord) => (ord.id === orderId ? { ...ord, status: newStatus } : ord))
-      );
-
-      // Sync with database
-      await loadOrders();
+      // Refresh database records
+      await loadData();
     } catch (err: any) {
-      setSaveError(err.message || "Failed to update order status. Please try again.");
+      setSaveError(err.message || "Failed to update order. Please try again.");
     } finally {
       setSavingOrderId(null);
     }
@@ -118,7 +144,8 @@ export default function AdminOrdersPage() {
       o.trackingId.toLowerCase().includes(search.toLowerCase()) ||
       o.orderNumber.toLowerCase().includes(search.toLowerCase()) ||
       o.receiverName.toLowerCase().includes(search.toLowerCase()) ||
-      o.receiverPhone.includes(search);
+      o.receiverPhone.includes(search) ||
+      (o.assignedRider?.user?.name && o.assignedRider.user.name.toLowerCase().includes(search.toLowerCase()));
     const matchesStatus = statusFilter === "ALL" || o.status === statusFilter;
     return matchesSearch && matchesStatus;
   });
@@ -140,7 +167,7 @@ export default function AdminOrdersPage() {
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="Search tracking ID, phone..."
+              placeholder="Search tracking ID, phone, rider..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 w-56"
@@ -154,6 +181,8 @@ export default function AdminOrdersPage() {
           >
             <option value="ALL">ALL</option>
             <option value="ORDER_CREATED">ORDER CREATED</option>
+            <option value="ASSIGNED">ASSIGNED</option>
+            <option value="ACCEPTED">ACCEPTED</option>
             <option value="PICKED_UP">PICKED UP</option>
             <option value="IN_TRANSIT">IN TRANSIT</option>
             <option value="OUT_FOR_DELIVERY">OUT FOR DELIVERY</option>
@@ -163,7 +192,14 @@ export default function AdminOrdersPage() {
         </div>
       </div>
 
-      {/* Error Alert */}
+      {/* Notifications */}
+      {saveSuccess && (
+        <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-xl text-xs flex items-center gap-2 mb-4">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span>{saveSuccess}</span>
+        </div>
+      )}
+
       {saveError && (
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-xs flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
@@ -201,7 +237,7 @@ export default function AdminOrdersPage() {
                   <th className="py-3.5 px-6">Merchant / Sender</th>
                   <th className="py-3.5 px-6">Recipient & Address</th>
                   <th className="py-3.5 px-6">COD / Fee</th>
-                  <th className="py-3.5 px-6">Status</th>
+                  <th className="py-3.5 px-6">Status & Assigned Rider</th>
                   <th className="py-3.5 px-6 text-right">Actions</th>
                 </tr>
               </thead>
@@ -210,6 +246,14 @@ export default function AdminOrdersPage() {
                   const isEditing = editingOrderId === o.id;
                   const isSaving = savingOrderId === o.id;
                   const currentVal = selectedStatuses[o.id] || o.status;
+                  const currentRiderId =
+                    selectedRiders[o.id] !== undefined
+                      ? selectedRiders[o.id]
+                      : o.assignedRiderId || "";
+
+                  const assignedRiderInfo =
+                    o.assignedRider ||
+                    riders.find((r) => r.id === o.assignedRiderId);
 
                   return (
                     <tr key={o.id} className="hover:bg-slate-50/70 transition">
@@ -248,30 +292,71 @@ export default function AdminOrdersPage() {
                         <span className="text-[11px] text-slate-400">Delivery: {formatCurrency(o.totalCharge)}</span>
                       </td>
                       <td className="py-4 px-6">
-                        <select
-                          disabled={!isEditing}
-                          value={currentVal}
-                          onChange={(e) => {
-                            setSelectedStatuses((prev) => ({ ...prev, [o.id]: e.target.value }));
-                          }}
-                          className={`text-xs font-semibold px-2.5 py-1 rounded-lg border focus:outline-none transition ${
-                            isEditing
-                              ? "bg-white text-blue-700 border-blue-500 ring-2 ring-blue-100 shadow-sm cursor-pointer"
-                              : o.status === "DELIVERED"
-                              ? "bg-emerald-50 text-emerald-800 border-emerald-200 cursor-not-allowed"
-                              : o.status === "OUT_FOR_DELIVERY"
-                              ? "bg-blue-50 text-blue-800 border-blue-200 cursor-not-allowed"
-                              : o.status.includes("RETURN") || o.status.includes("FAILED")
-                              ? "bg-red-50 text-red-700 border-red-200 cursor-not-allowed"
-                              : "bg-slate-50 text-slate-700 border-slate-200 cursor-not-allowed"
-                          }`}
-                        >
-                          {getStatusOptions(o.status).map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="space-y-1.5">
+                          {/* Order Status Selector */}
+                          <select
+                            disabled={!isEditing}
+                            value={currentVal}
+                            onChange={(e) => {
+                              setSelectedStatuses((prev) => ({ ...prev, [o.id]: e.target.value }));
+                            }}
+                            className={`text-xs font-semibold px-2.5 py-1 rounded-lg border focus:outline-none transition ${
+                              isEditing
+                                ? "bg-white text-blue-700 border-blue-500 ring-2 ring-blue-100 shadow-sm cursor-pointer"
+                                : o.status === "DELIVERED"
+                                ? "bg-emerald-50 text-emerald-800 border-emerald-200 cursor-not-allowed"
+                                : o.status === "OUT_FOR_DELIVERY"
+                                ? "bg-blue-50 text-blue-800 border-blue-200 cursor-not-allowed"
+                                : o.status === "ASSIGNED"
+                                ? "bg-purple-50 text-purple-800 border-purple-200 cursor-not-allowed"
+                                : o.status.includes("RETURN") || o.status.includes("FAILED")
+                                ? "bg-red-50 text-red-700 border-red-200 cursor-not-allowed"
+                                : "bg-slate-50 text-slate-700 border-slate-200 cursor-not-allowed"
+                            }`}
+                          >
+                            {getStatusOptions(o.status).map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+
+                          {/* Real Registered Rider Dropdown Selector / Display */}
+                          {isEditing ? (
+                            <select
+                              value={currentRiderId}
+                              onChange={(e) => {
+                                const chosenRiderId = e.target.value;
+                                setSelectedRiders((prev) => ({ ...prev, [o.id]: chosenRiderId }));
+                                if (chosenRiderId && (!selectedStatuses[o.id] || selectedStatuses[o.id] === "ORDER_CREATED")) {
+                                  setSelectedStatuses((prev) => ({ ...prev, [o.id]: "ASSIGNED" }));
+                                }
+                              }}
+                              className="w-full text-xs font-semibold px-2.5 py-1 rounded-lg border border-purple-300 bg-white text-purple-900 focus:ring-2 focus:ring-purple-500 cursor-pointer shadow-sm"
+                            >
+                              <option value="">Select Rider ▼</option>
+                              {approvedRiders.map((r) => (
+                                <option key={r.id} value={r.id}>
+                                  {r.name} | ID: {r.riderId} | {r.isActive ? "Available" : "Offline"}
+                                </option>
+                              ))}
+                            </select>
+                          ) : assignedRiderInfo ? (
+                            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-purple-700 bg-purple-50 px-2.5 py-0.5 rounded-md border border-purple-200 max-w-[210px] truncate">
+                              <Bike className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                              <span className="truncate">
+                                {assignedRiderInfo.name || assignedRiderInfo.user?.name}
+                              </span>
+                              <span className="text-[10px] font-mono text-purple-500 font-bold shrink-0">
+                                {assignedRiderInfo.riderId || "RDR"}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="block text-[11px] text-slate-400 italic">
+                              Unassigned (No rider)
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-4 px-6 text-right space-x-3 whitespace-nowrap">
                         <Link
@@ -289,23 +374,23 @@ export default function AdminOrdersPage() {
                         </Link>
                         <button
                           type="button"
-                          onClick={() => handleEdit(o.id, o.status)}
+                          onClick={() => handleEdit(o)}
                           className={`inline-flex items-center font-bold text-xs transition ${
                             isEditing
                               ? "text-amber-600 hover:text-amber-800 underline"
                               : "text-indigo-600 hover:text-indigo-800"
                           }`}
                         >
-                          Edit
+                          {isEditing ? "Cancel" : "Edit"}
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleSave(o.id, o.status)}
-                          disabled={isSaving}
+                          onClick={() => handleSave(o)}
+                          disabled={!isEditing || isSaving}
                           className={`inline-flex items-center font-bold text-xs transition ${
                             isEditing
-                              ? "text-emerald-600 hover:text-emerald-800 font-extrabold"
-                              : "text-slate-400 hover:text-slate-600 cursor-pointer"
+                              ? "text-emerald-600 hover:text-emerald-800 font-extrabold cursor-pointer"
+                              : "text-slate-300 cursor-not-allowed"
                           } disabled:opacity-50`}
                         >
                           {isSaving ? "Saving..." : "Save"}

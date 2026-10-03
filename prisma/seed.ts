@@ -49,21 +49,15 @@ async function main() {
     });
 
     // Seed top areas for each district
-    for (const areaName of dist.areas) {
-      await prisma.area.upsert({
-        where: {
-          districtId_name: {
-            districtId: districtRecord.id,
-            name: areaName,
-          },
-        },
-        update: {},
-        create: {
+    if (dist.areas && dist.areas.length > 0) {
+      await prisma.area.createMany({
+        data: dist.areas.map((areaName) => ({
           districtId: districtRecord.id,
           name: areaName,
           bnName: areaName,
           expressAvailable: dist.zoneType === "INSIDE_DHAKA",
-        },
+        })),
+        skipDuplicates: true,
       });
     }
   }

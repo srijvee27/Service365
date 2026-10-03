@@ -77,6 +77,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Check if account is deleted
+    if (user.role === "RIDER" && user.rider?.deletedAt) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: {
+            code: "RIDER_DELETED",
+            message: "This rider account has been deactivated or deleted. Please contact administrator support.",
+          },
+        },
+        { status: 403 }
+      );
+    }
+
     // Verify Password
     const isValid = await verifyPassword(password, user.passwordHash);
     if (!isValid) {
@@ -92,6 +106,48 @@ export async function POST(req: NextRequest) {
         { success: false, error: { code: "ROLE_MISMATCH", message: `Account is not registered as ${role}` } },
         { status: 403 }
       );
+    }
+
+    // Check Rider approval status
+    if (user.role === "RIDER") {
+      const approvalStatus = user.rider?.approvalStatus || "PENDING";
+      if (approvalStatus === "PENDING") {
+        return NextResponse.json(
+          {
+            success: false,
+            error: {
+              code: "RIDER_PENDING",
+              message:
+                "Your rider application is currently pending admin approval. Please wait for an administrator to review your registration.",
+            },
+          },
+          { status: 403 }
+        );
+      }
+      if (user.rider?.deletedAt) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: {
+              code: "RIDER_DELETED",
+              message: "This rider account has been deactivated or deleted. Please contact administrator support.",
+            },
+          },
+          { status: 403 }
+        );
+      }
+      if (approvalStatus === "REJECTED" || approvalStatus === "SUSPENDED" || !user.isActive) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: {
+              code: "RIDER_INACTIVE",
+              message: "Your delivery agent account is inactive or rejected. Please contact administrator support.",
+            },
+          },
+          { status: 403 }
+        );
+      }
     }
 
     const payload: SessionPayload = {

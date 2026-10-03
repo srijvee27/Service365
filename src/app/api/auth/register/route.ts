@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma, isDatabaseConfigured } from "@/lib/db";
 import { hashPassword, createSessionToken, SESSION_COOKIE_NAME, SessionPayload } from "@/lib/auth";
 import { normalizeBangladeshPhone } from "@/lib/utils";
+import { isValidBangladeshNid } from "@/lib/nid-service";
 import { Role, MerchantStatus } from "@prisma/client";
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { name, email, phone, password, role = "CUSTOMER", businessName, vehicleType } = body;
+    const { name, email, phone, password, role = "CUSTOMER", businessName, vehicleType, nidNumber } = body;
 
     if (!name || !email || !phone || !password) {
       return NextResponse.json(
@@ -34,6 +35,54 @@ export async function POST(req: NextRequest) {
     const normalizedPhone = phoneResult.normalized;
     const normalizedEmail = email.toLowerCase().trim();
 
+    // Rider-specific NID validation & Shufti verification enforcement
+    if (role === "RIDER") {
+      if (!nidNumber || !nidNumber.trim()) {
+        return NextResponse.json(
+          { success: false, error: { code: "MISSING_NID", message: "NID number is required for rider registration." } },
+          { status: 400 }
+        );
+      }
+      if (!isValidBangladeshNid(nidNumber)) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: {
+              code: "INVALID_NID",
+              message: "Invalid Bangladesh NID. Must be 10 digits (Smart Card), 13 digits, or 17 digits.",
+            },
+          },
+          { status: 400 }
+        );
+      }
+
+      // Backend independently verifies NID status from database
+      if (isDatabaseConfigured) {
+        const cleanNid = nidNumber.trim();
+        const verification = await prisma.nidVerification.findFirst({
+          where: {
+            nidNumber: cleanNid,
+            status: "VERIFIED",
+            ...(body.nidReference ? { reference: body.nidReference } : {}),
+          },
+          orderBy: { verifiedAt: "desc" },
+        });
+
+        if (!verification) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: {
+                code: "NID_NOT_VERIFIED",
+                message: "NID verification is required before completing registration.",
+              },
+            },
+            { status: 400 }
+          );
+        }
+      }
+    }
+
     // Check existing
     if (isDatabaseConfigured) {
       const existingUser = await prisma.user.findFirst({
@@ -55,6 +104,27 @@ export async function POST(req: NextRequest) {
           },
           { status: 409 }
         );
+      }
+
+      if (role === "RIDER" && nidNumber) {
+        const existingNid = await prisma.rider.findFirst({
+          where: {
+            nidNumber: nidNumber.trim(),
+            deletedAt: null,
+          },
+        });
+        if (existingNid) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: {
+                code: "NID_EXISTS",
+                message: "A rider account with this NID already exists.",
+              },
+            },
+            { status: 409 }
+          );
+        }
       }
     }
 
@@ -104,10 +174,22 @@ export async function POST(req: NextRequest) {
           },
         });
       } else if (assignedRole === Role.RIDER) {
+        const riderCount = await prisma.rider.count();
+        const customRiderId = `RDR-${String(riderCount + 101).padStart(3, "0")}`;
+
         const rider = await prisma.rider.create({
           data: {
             userId: createdUser.id,
+            riderId: customRiderId,
             vehicleType: vehicleType || "BIKE",
+            nidNumber: nidNumber ? nidNumber.trim() : null,
+            approvalStatus: "PENDING",
+            nidVerificationStatus: "VERIFIED",
+            nidVerifiedAt: new Date(),
+            nidVerifiedBy: "SHUFTI_PRO",
+            shuftiReference: body.nidReference || null,
+            status: "AVAILABLE",
+            hub: "Inside Dhaka Hub",
           },
         });
         riderId = rider.id;
@@ -147,7 +229,10 @@ export async function POST(req: NextRequest) {
     const res = NextResponse.json({
       success: true,
       user: payload,
-      message: "Account registered successfully",
+      message:
+        assignedRole === Role.RIDER
+          ? "Rider account registered! Your application is pending admin approval."
+          : "Account registered successfully",
     });
 
     if (assignedRole !== Role.RIDER) {
