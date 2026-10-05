@@ -16,7 +16,6 @@ import {
   Printer,
   ExternalLink,
   ShieldCheck,
-  Server
 } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 
@@ -274,29 +273,6 @@ export default function AdminDashboardPage() {
             </table>
           </div>
         )}
-      </div>
-
-      {/* System Infrastructure Status Banner */}
-      <div className="bg-slate-900 text-slate-300 rounded-2xl p-6 flex flex-col md:flex-row items-center justify-between gap-4">
-        <div className="flex items-center space-x-4">
-          <div className="w-10 h-10 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
-            <Server className="w-5 h-5" />
-          </div>
-          <div>
-            <h4 className="text-white font-bold text-sm">System & Gateway Status</h4>
-            <p className="text-slate-400 text-xs">
-              PostgreSQL Connected • bKash Gateway Active • SMS Gateway Online • 64 Districts Enabled
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center space-x-3 text-xs font-mono">
-          <span className="px-2.5 py-1 rounded bg-slate-800 text-emerald-400 border border-slate-700">
-            Neon Ready
-          </span>
-          <span className="px-2.5 py-1 rounded bg-slate-800 text-blue-400 border border-slate-700">
-            Vercel Ready
-          </span>
-        </div>
       </div>
     </AdminLayout>
   );
