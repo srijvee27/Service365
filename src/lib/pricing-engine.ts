@@ -14,17 +14,27 @@ export interface PricingCalculationInput {
   serviceType: ServiceType;
   paymentMethod: PaymentMethod;
   codAmount?: number;
+  declaredValue?: number;
   discountAmount?: number;
+  customRule?: {
+    baseCharge?: number;
+    extraPerKg?: number;
+    codPercentage?: number;
+    taxPercentage?: number;
+    estimatedHours?: number;
+  };
 }
 
 export interface PricingCalculationResult {
   baseCharge: number;
   weightCharge: number;
+  deliveryCharge: number;
   codFee: number;
   taxAmount: number;
   discountAmount: number;
   totalCharge: number;
   estimatedHours: number;
+  recommendedCodAmount?: number;
   breakdown: {
     baseWeightThreshold: number;
     extraWeightKg: number;
@@ -56,13 +66,25 @@ const DEFAULT_ZONE_PRICING: Record<
  * Calculates delivery fee deterministically on the server
  */
 export function calculateDeliveryPricing(input: PricingCalculationInput): PricingCalculationResult {
-  const { fromZone, toZone, weightKg, serviceType, paymentMethod, codAmount = 0, discountAmount = 0 } = input;
+  const {
+    fromZone,
+    toZone,
+    weightKg,
+    serviceType,
+    paymentMethod,
+    codAmount = 0,
+    declaredValue = 0,
+    discountAmount = 0,
+    customRule,
+  } = input;
 
   const key = `${fromZone}->${toZone}`;
   const defaultRule = DEFAULT_ZONE_PRICING[key] || { baseCharge: 130, extraPerKg: 25, estimatedHours: 48 };
 
-  let baseCharge = defaultRule.baseCharge;
-  let estimatedHours = defaultRule.estimatedHours;
+  let baseCharge = customRule?.baseCharge !== undefined ? customRule.baseCharge : defaultRule.baseCharge;
+  let estimatedHours = customRule?.estimatedHours !== undefined ? customRule.estimatedHours : defaultRule.estimatedHours;
+  const extraPerKg = customRule?.extraPerKg !== undefined ? customRule.extraPerKg : defaultRule.extraPerKg;
+  const configuredCodRate = customRule?.codPercentage !== undefined ? customRule.codPercentage : 1.0;
 
   // Service Type Adjustments
   if (serviceType === "EXPRESS") {
@@ -77,34 +99,56 @@ export function calculateDeliveryPricing(input: PricingCalculationInput): Pricin
   const baseWeightThreshold = 1.0;
   const roundedWeight = Math.max(0.1, Number(weightKg) || 0.5);
   const extraWeightKg = Math.max(0, Math.ceil(roundedWeight - baseWeightThreshold));
-  const weightCharge = extraWeightKg * defaultRule.extraPerKg;
+  const weightCharge = extraWeightKg * extraPerKg;
 
-  // Cash on Delivery (COD) Fee: 1% of COD collection amount (min 0)
-  const codPercentage = paymentMethod === "COD" ? 1.0 : 0.0;
-  const codFee = paymentMethod === "COD" && codAmount > 0 ? Math.round((codAmount * codPercentage) / 100) : 0;
+  // Delivery charge (base charge with speed markup + weight charge)
+  const deliveryCharge = baseCharge + weightCharge;
 
-  // Subtotal before tax
-  const subtotal = baseCharge + weightCharge + codFee;
+  // Cash on Delivery (COD) Fee:
+  // If codAmount > 0, calculate based on codAmount.
+  // If codAmount is 0 and declaredValue > 0, calculate based on subtotal (declaredValue + deliveryCharge).
+  const codPercentage = paymentMethod === "COD" ? configuredCodRate : 0.0;
+  let codFee = 0;
+  if (paymentMethod === "COD") {
+    if (codAmount > 0) {
+      codFee = Math.round((codAmount * codPercentage) / 100);
+    } else if (declaredValue > 0) {
+      const subtotal = declaredValue + deliveryCharge;
+      codFee = Math.round((subtotal * codPercentage) / 100);
+    }
+  }
+
+  // Subtotal before tax (delivery fee + COD fee)
+  const subtotal = deliveryCharge + codFee;
 
   // Tax (0% default in BD domestic postal services or configurable)
-  const taxPercentage = 0;
+  const taxPercentage = customRule?.taxPercentage !== undefined ? customRule.taxPercentage : 0;
   const taxAmount = Math.round((subtotal * taxPercentage) / 100);
 
-  // Final Total
+  // Final Total Delivery Charge
   const totalCharge = Math.max(0, subtotal + taxAmount - discountAmount);
+
+  // Recommended final amount to collect from recipient:
+  // Parcel Value + Delivery Charge + COD Fee
+  const recommendedCodAmount =
+    paymentMethod === "COD"
+      ? (declaredValue > 0 ? declaredValue + deliveryCharge + (codAmount > 0 ? codFee : Math.round(((declaredValue + deliveryCharge) * codPercentage) / 100)) : codAmount)
+      : 0;
 
   return {
     baseCharge,
     weightCharge,
+    deliveryCharge,
     codFee,
     taxAmount,
     discountAmount,
     totalCharge,
     estimatedHours,
+    recommendedCodAmount,
     breakdown: {
       baseWeightThreshold,
       extraWeightKg,
-      perKgRate: defaultRule.extraPerKg,
+      perKgRate: extraPerKg,
       codPercentage,
       taxPercentage,
     },

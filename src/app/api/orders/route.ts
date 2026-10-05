@@ -78,6 +78,38 @@ export async function POST(req: NextRequest) {
     const fromZone = getZoneByDistrict(senderDistrict);
     const toZone = getZoneByDistrict(receiverDistrict);
 
+    let customRule;
+    if (isDatabaseConfigured) {
+      let dbRule = await prisma.pricingRule.findFirst({
+        where: {
+          fromZone,
+          toZone,
+          serviceType: serviceType as ServiceType,
+          active: true,
+        },
+      });
+
+      if (!dbRule) {
+        dbRule = await prisma.pricingRule.findFirst({
+          where: {
+            fromZone,
+            toZone,
+            serviceType: "REGULAR",
+            active: true,
+          },
+        });
+      }
+
+      if (dbRule) {
+        customRule = {
+          baseCharge: Number(dbRule.baseCharge),
+          extraPerKg: Number(dbRule.additionalWeightCharge),
+          codPercentage: Number(dbRule.codPercentage),
+          taxPercentage: Number(dbRule.taxPercentage),
+        };
+      }
+    }
+
     const pricing = calculateDeliveryPricing({
       fromZone,
       toZone,
@@ -85,7 +117,13 @@ export async function POST(req: NextRequest) {
       serviceType: serviceType as ServiceType,
       paymentMethod: paymentMethod as PaymentMethod,
       codAmount: paymentMethod === "COD" ? Number(codAmount) : 0,
+      declaredValue: Number(declaredValue) || 0,
+      customRule,
     });
+
+    const finalCodAmount = paymentMethod === "COD"
+      ? (Number(codAmount) > 0 ? Number(codAmount) : (pricing.recommendedCodAmount || 0))
+      : 0;
 
     const orderNumber = generateOrderNumber();
     const trackingId = generateTrackingId();
@@ -137,7 +175,7 @@ export async function POST(req: NextRequest) {
             totalCharge: pricing.totalCharge,
             paymentMethod: paymentMethod as PaymentMethod,
             paymentStatus: paymentMethod === "COD" ? PaymentStatus.PENDING : PaymentStatus.INITIATED,
-            codAmount: paymentMethod === "COD" ? Number(codAmount) : 0,
+            codAmount: finalCodAmount,
             codStatus: paymentMethod === "COD" ? CodStatus.PENDING : CodStatus.SETTLED,
             status: OrderStatus.ORDER_CREATED,
             orderDate: parsedOrderDate,
@@ -158,14 +196,14 @@ export async function POST(req: NextRequest) {
         });
 
         // If COD and merchant exists, log pending COD transaction
-        if (paymentMethod === "COD" && merchantId && Number(codAmount) > 0) {
+        if (paymentMethod === "COD" && merchantId && finalCodAmount > 0) {
           await tx.codTransaction.create({
             data: {
               orderId: ord.id,
               merchantId,
-              amount: Number(codAmount),
+              amount: finalCodAmount,
               codFee: pricing.codFee,
-              netAmount: Number(codAmount) - pricing.codFee - pricing.totalCharge,
+              netAmount: Math.max(0, finalCodAmount - pricing.totalCharge),
               status: CodStatus.PENDING,
             },
           });

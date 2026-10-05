@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { BANGLADESH_DISTRICTS, getZoneByDistrict } from "@/lib/bangladesh-data";
 import { calculateDeliveryPricing, ServiceType, PaymentMethod } from "@/lib/pricing-engine";
 import { formatCurrency } from "@/lib/utils";
@@ -14,9 +14,44 @@ export function DeliveryCalculator() {
   const [serviceType, setServiceType] = useState<ServiceType>("REGULAR");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("COD");
   const [codAmount, setCodAmount] = useState(1500);
+  const [pricingRules, setPricingRules] = useState<any[]>([]);
+
+  useEffect(() => {
+    let isMounted = true;
+    fetch("/api/pricing/calculate")
+      .then((res) => res.json())
+      .then((data) => {
+        if (isMounted && data.success && Array.isArray(data.data)) {
+          setPricingRules(data.data);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const pickupZone = useMemo(() => getZoneByDistrict(pickupDistrict), [pickupDistrict]);
   const deliveryZone = useMemo(() => getZoneByDistrict(deliveryDistrict), [deliveryDistrict]);
+
+  const activeRule = useMemo(() => {
+    const exactRule = pricingRules.find(
+      (r) => r.fromZone === pickupZone && r.toZone === deliveryZone && r.serviceType === serviceType
+    );
+    const regularRule = pricingRules.find(
+      (r) => r.fromZone === pickupZone && r.toZone === deliveryZone && (r.serviceType === "REGULAR" || !r.serviceType)
+    );
+    const found = exactRule || regularRule;
+    if (found) {
+      return {
+        baseCharge: Number(found.baseCharge),
+        extraPerKg: Number(found.additionalWeightCharge),
+        codPercentage: Number(found.codPercentage),
+        taxPercentage: Number(found.taxPercentage || 0),
+      };
+    }
+    return undefined;
+  }, [pricingRules, pickupZone, deliveryZone, serviceType]);
 
   const pricing = useMemo(() => {
     return calculateDeliveryPricing({
@@ -26,8 +61,9 @@ export function DeliveryCalculator() {
       serviceType,
       paymentMethod,
       codAmount: paymentMethod === "COD" ? codAmount : 0,
+      customRule: activeRule,
     });
-  }, [pickupZone, deliveryZone, weight, serviceType, paymentMethod, codAmount]);
+  }, [pickupZone, deliveryZone, weight, serviceType, paymentMethod, codAmount, activeRule]);
 
   return (
     <div className="bg-white rounded-2xl shadow-xl shadow-slate-200/60 border border-slate-200 overflow-hidden">
@@ -180,17 +216,26 @@ export function DeliveryCalculator() {
                 >
                   Cash on Delivery
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setPaymentMethod("BKASH")}
-                  className={`flex-1 py-2 text-xs font-semibold rounded-lg border text-center transition ${
-                    paymentMethod === "BKASH"
-                      ? "bg-pink-50 border-pink-500 text-pink-700"
-                      : "border-slate-200 text-slate-600"
-                  }`}
+                {/* bKash Prepaid (Temporarily Locked - Re-enable onClick to activate) */}
+                <div
+                  className="relative flex-1 cursor-not-allowed select-none overflow-hidden rounded-lg"
+                  title="Online Payment Coming Soon"
+                  aria-disabled="true"
                 >
-                  bKash Prepaid
-                </button>
+                  <button
+                    type="button"
+                    disabled
+                    tabIndex={-1}
+                    className="w-full h-full py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-400 opacity-40 bg-slate-50 cursor-not-allowed"
+                  >
+                    bKash Prepaid
+                  </button>
+                  <div className="absolute inset-0 bg-white/75 backdrop-blur-[0.5px] flex items-center justify-center px-1">
+                    <span className="text-[10px] font-bold text-slate-800 text-center leading-tight">
+                      Online Payment Coming Soon
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
 

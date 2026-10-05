@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { MerchantLayout } from "@/components/layout/MerchantLayout";
 import { BANGLADESH_DISTRICTS, getDistrictByName, getZoneByDistrict } from "@/lib/bangladesh-data";
@@ -54,8 +54,31 @@ function CreateParcelContent() {
   const [declaredValue, setDeclaredValue] = useState(2500);
 
   const [serviceType, setServiceType] = useState<ServiceType>((searchParams.get("service") as ServiceType) || "REGULAR");
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>((searchParams.get("method") as PaymentMethod) || "COD");
-  const [codAmount, setCodAmount] = useState(parseFloat(searchParams.get("cod") || "2500"));
+  // Temporary UI lock: default to COD while real payment provider subscription is pending
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("COD");
+  const [userEditedCod, setUserEditedCod] = useState<number | null>(
+    searchParams.get("cod") ? parseFloat(searchParams.get("cod")!) : null
+  );
+  const [pricingRules, setPricingRules] = useState<any[]>([]);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function fetchRules() {
+      try {
+        const res = await fetch("/api/pricing/calculate");
+        const data = await res.json();
+        if (isMounted && data.success && Array.isArray(data.data)) {
+          setPricingRules(data.data);
+        }
+      } catch (err) {
+        console.warn("Could not fetch DB pricing rules, using default fallback", err);
+      }
+    }
+    fetchRules();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Dynamic thana list for receiver district
   const receiverDistrictData = useMemo(() => getDistrictByName(receiverDistrict), [receiverDistrict]);
@@ -65,6 +88,57 @@ function CreateParcelContent() {
   const fromZone = useMemo(() => getZoneByDistrict(senderDistrict), [senderDistrict]);
   const toZone = useMemo(() => getZoneByDistrict(receiverDistrict), [receiverDistrict]);
 
+  const activeRule = useMemo(() => {
+    const found = pricingRules.find(
+      (r) => r.fromZone === fromZone && r.toZone === toZone && (r.serviceType === "REGULAR" || !r.serviceType)
+    );
+    if (found) {
+      return {
+        baseCharge: Number(found.baseCharge),
+        extraPerKg: Number(found.additionalWeightCharge),
+        codPercentage: Number(found.codPercentage),
+        taxPercentage: Number(found.taxPercentage || 0),
+      };
+    }
+    return undefined;
+  }, [pricingRules, fromZone, toZone]);
+
+  // Regular Transit delivery charge for Step 4 Standard Rates display
+  const regularPricing = useMemo(() => {
+    return calculateDeliveryPricing({
+      fromZone,
+      toZone,
+      weightKg: weight,
+      serviceType: "REGULAR",
+      paymentMethod: "COD",
+      customRule: activeRule,
+    });
+  }, [fromZone, toZone, weight, activeRule]);
+
+  const regularDeliveryCharge = regularPricing.baseCharge + regularPricing.weightCharge;
+
+  // Delivery charge for the selected service speed
+  const currentDeliveryCharge = useMemo(() => {
+    if (serviceType === "EXPRESS") return regularDeliveryCharge + 40;
+    if (serviceType === "SAME_DAY") return regularDeliveryCharge + 70;
+    return regularDeliveryCharge;
+  }, [serviceType, regularDeliveryCharge]);
+
+  // Dynamic COD calculation based on Admin Pricing Rules:
+  // BASE AMOUNT = Parcel/Declared Value
+  // DELIVERY CHARGE = Calculated delivery fee from Admin Pricing Rules
+  // SUBTOTAL = Parcel Value + Delivery Charge
+  // COD FEE = Admin-configured COD percentage applied to Subtotal
+  // FINAL COD AMOUNT = Parcel Value + Delivery Charge + COD Fee
+  const codRate = activeRule?.codPercentage ?? 1.0;
+  const autoSubtotal = (Number(declaredValue) || 0) + currentDeliveryCharge;
+  const autoCodFee = paymentMethod === "COD" ? Math.round((autoSubtotal * codRate) / 100) : 0;
+  const autoCodAmount = paymentMethod === "COD" ? autoSubtotal + autoCodFee : 0;
+
+  // If user hasn't explicitly typed their own custom override, use autoCodAmount
+  const codAmount = userEditedCod !== null ? userEditedCod : autoCodAmount;
+  const dynamicCodFee = paymentMethod === "COD" && codAmount > 0 ? Math.round((codAmount * codRate) / 100) : 0;
+
   const pricing = useMemo(() => {
     return calculateDeliveryPricing({
       fromZone,
@@ -73,8 +147,10 @@ function CreateParcelContent() {
       serviceType,
       paymentMethod,
       codAmount: paymentMethod === "COD" ? codAmount : 0,
+      declaredValue: Number(declaredValue) || 0,
+      customRule: activeRule,
     });
-  }, [fromZone, toZone, weight, serviceType, paymentMethod, codAmount]);
+  }, [fromZone, toZone, weight, serviceType, paymentMethod, codAmount, declaredValue, activeRule]);
 
   const handleNext = () => {
     setError(null);
@@ -536,7 +612,10 @@ function CreateParcelContent() {
                       min="0.1"
                       max="50"
                       value={weight}
-                      onChange={(e) => setWeight(parseFloat(e.target.value) || 1)}
+                      onChange={(e) => {
+                        setWeight(parseFloat(e.target.value) || 1);
+                        setUserEditedCod(null);
+                      }}
                       className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-blue-600"
                     />
                   </div>
@@ -547,7 +626,10 @@ function CreateParcelContent() {
                       type="number"
                       min="0"
                       value={declaredValue}
-                      onChange={(e) => setDeclaredValue(parseFloat(e.target.value) || 0)}
+                      onChange={(e) => {
+                        setDeclaredValue(parseFloat(e.target.value) || 0);
+                        setUserEditedCod(null);
+                      }}
                       className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm"
                     />
                   </div>
@@ -576,20 +658,29 @@ function CreateParcelContent() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div
-                    onClick={() => setServiceType("REGULAR")}
+                    onClick={() => {
+                      setServiceType("REGULAR");
+                      setUserEditedCod(null);
+                    }}
                     className={`cursor-pointer p-5 rounded-2xl border-2 transition ${
                       serviceType === "REGULAR" ? "border-blue-600 bg-blue-50/50" : "border-slate-200 hover:border-slate-300"
                     }`}
                   >
                     <h4 className="font-bold text-slate-900 text-sm">Regular Transit</h4>
                     <p className="text-xs text-slate-500 mt-1">24-72 Hours Delivery</p>
-                    <span className="text-sm font-extrabold text-blue-600 mt-3 block">
-                      Standard Rates
-                    </span>
+                    <div className="flex items-center justify-between mt-3">
+                      <span className="text-sm font-extrabold text-blue-600">Standard Rates</span>
+                      <span className="text-sm font-extrabold text-blue-700">
+                        ৳{regularDeliveryCharge}
+                      </span>
+                    </div>
                   </div>
 
                   <div
-                    onClick={() => setServiceType("EXPRESS")}
+                    onClick={() => {
+                      setServiceType("EXPRESS");
+                      setUserEditedCod(null);
+                    }}
                     className={`cursor-pointer p-5 rounded-2xl border-2 transition ${
                       serviceType === "EXPRESS" ? "border-blue-600 bg-blue-50/50" : "border-slate-200 hover:border-slate-300"
                     }`}
@@ -605,6 +696,7 @@ function CreateParcelContent() {
                     onClick={() => {
                       if (fromZone === "INSIDE_DHAKA" && toZone === "INSIDE_DHAKA") {
                         setServiceType("SAME_DAY");
+                        setUserEditedCod(null);
                       }
                     }}
                     className={`p-5 rounded-2xl border-2 transition ${
@@ -643,7 +735,7 @@ function CreateParcelContent() {
                     <div className="flex items-center justify-between">
                       <h4 className="font-bold text-slate-900 text-sm">Cash on Delivery (COD)</h4>
                       <span className="text-xs font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded">
-                        1% Fee
+                        {codRate}% Fee
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 mt-1">
@@ -651,21 +743,87 @@ function CreateParcelContent() {
                     </p>
                   </div>
 
+                  {/* Online Payment Card - Premium Glassmorphism Showcase matching Reference */}
                   <div
-                    onClick={() => setPaymentMethod("BKASH")}
-                    className={`cursor-pointer p-5 rounded-2xl border-2 transition ${
-                      paymentMethod === "BKASH" ? "border-pink-500 bg-pink-50/50" : "border-slate-200"
-                    }`}
+                    className="relative p-[1.5px] rounded-2xl bg-gradient-to-br from-indigo-500/70 via-fuchsia-500/60 to-cyan-400/70 shadow-[0_8px_25px_-5px_rgba(168,85,247,0.2)] cursor-not-allowed select-none overflow-hidden"
+                    title="Online Payment Method Coming Soon"
+                    aria-disabled="true"
                   >
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-bold text-slate-900 text-sm">bKash Prepaid Online</h4>
-                      <span className="text-xs font-bold text-pink-700 bg-pink-100 px-2 py-0.5 rounded">
-                        0% COD Fee
-                      </span>
+                    {/* Inner Glass Showcase Container */}
+                    <div className="relative h-full rounded-[14.5px] p-5 overflow-hidden bg-gradient-to-br from-white/60 via-purple-50/40 to-sky-50/50 backdrop-blur-xl border border-white/70 flex flex-col justify-between">
+                      {/* Ambient Blue + Pink Glow Orbs */}
+                      <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                        <div className="absolute -top-8 -left-8 w-44 h-44 rounded-full bg-pink-500/35 blur-2xl" />
+                        <div className="absolute -bottom-8 -right-8 w-48 h-48 rounded-full bg-cyan-400/40 blur-2xl" />
+                        <div className="absolute top-1/2 left-1/3 w-36 h-36 rounded-full bg-purple-500/25 blur-xl" />
+                      </div>
+
+                      {/* Realistic Diagonal Light & Reflection Streaks (SVG matching Reference) */}
+                      <svg
+                        className="absolute inset-0 w-full h-full pointer-events-none"
+                        xmlns="http://www.w3.org/2000/svg"
+                        preserveAspectRatio="none"
+                      >
+                        <defs>
+                          <linearGradient id="refRay1" x1="0%" y1="100%" x2="100%" y2="0%">
+                            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+                            <stop offset="35%" stopColor="#ffffff" stopOpacity="0.85" />
+                            <stop offset="40%" stopColor="#ffffff" stopOpacity="1" />
+                            <stop offset="45%" stopColor="#ffffff" stopOpacity="0.85" />
+                            <stop offset="75%" stopColor="#ffffff" stopOpacity="0" />
+                          </linearGradient>
+                          <linearGradient id="refRay2" x1="0%" y1="100%" x2="100%" y2="0%">
+                            <stop offset="10%" stopColor="#ffffff" stopOpacity="0" />
+                            <stop offset="50%" stopColor="#ffffff" stopOpacity="0.75" />
+                            <stop offset="55%" stopColor="#ffffff" stopOpacity="0.95" />
+                            <stop offset="60%" stopColor="#ffffff" stopOpacity="0.75" />
+                            <stop offset="90%" stopColor="#ffffff" stopOpacity="0" />
+                          </linearGradient>
+                          <linearGradient id="refRay3" x1="0%" y1="100%" x2="100%" y2="0%">
+                            <stop offset="25%" stopColor="#ffffff" stopOpacity="0" />
+                            <stop offset="68%" stopColor="#ffffff" stopOpacity="0.9" />
+                            <stop offset="72%" stopColor="#ffffff" stopOpacity="1" />
+                            <stop offset="76%" stopColor="#ffffff" stopOpacity="0.9" />
+                            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+                          </linearGradient>
+                        </defs>
+                        <line x1="-15%" y1="95%" x2="65%" y2="-15%" stroke="url(#refRay1)" strokeWidth="3" opacity="0.9" />
+                        <line x1="-2%" y1="110%" x2="78%" y2="5%" stroke="url(#refRay1)" strokeWidth="1" opacity="0.6" />
+                        <line x1="15%" y1="118%" x2="100%" y2="12%" stroke="url(#refRay2)" strokeWidth="1.5" opacity="0.7" />
+                        <line x1="30%" y1="125%" x2="115%" y2="22%" stroke="url(#refRay3)" strokeWidth="3.5" opacity="0.95" />
+                        <line x1="42%" y1="135%" x2="128%" y2="35%" stroke="url(#refRay3)" strokeWidth="1" opacity="0.7" />
+                      </svg>
+
+                      {/* Header matching Reference Image */}
+                      <div className="relative z-10 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-[#e11d48] shadow-[0_0_8px_rgba(225,29,72,0.8)] shrink-0" />
+                          <h4 className="font-bold text-slate-900 text-sm tracking-tight drop-shadow-[0_1px_1px_rgba(255,255,255,0.8)]">
+                            bKash Payment Online
+                          </h4>
+                        </div>
+                        <span className="text-xs font-bold text-pink-700 bg-pink-500/15 px-3 py-0.5 rounded-full border border-pink-500/25 shadow-xs">
+                          0% COD Fee
+                        </span>
+                      </div>
+
+                      {/* Centered Glass Padlock & Coming Soon Text */}
+                      <div className="relative z-10 flex flex-col items-center justify-center my-3 text-center">
+                        <div className="w-9 h-9 rounded-xl bg-white/30 backdrop-blur-md border border-white/80 shadow-[0_4px_12px_rgba(0,0,0,0.1),inset_0_1px_1px_rgba(255,255,255,0.9)] flex items-center justify-center mb-1.5">
+                          <svg className="w-5 h-5 text-white drop-shadow-[0_2px_4px_rgba(15,23,42,0.3)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                          </svg>
+                        </div>
+                        <span className="text-white font-extrabold text-sm sm:text-base tracking-tight leading-tight drop-shadow-[0_2px_8px_rgba(15,23,42,0.65)]">
+                          Online Payment Method Coming Soon
+                        </span>
+                      </div>
+
+                      {/* Faint description at bottom */}
+                      <p className="relative z-10 text-[11px] text-slate-600/80 text-center truncate">
+                        Pay delivery fee online directly through official bKash Tokenized Checkout.
+                      </p>
                     </div>
-                    <p className="text-xs text-slate-500 mt-1">
-                      Pay delivery fee online directly through official bKash Tokenized Checkout.
-                    </p>
                   </div>
                 </div>
 
@@ -678,11 +836,14 @@ function CreateParcelContent() {
                       type="number"
                       min="0"
                       value={codAmount}
-                      onChange={(e) => setCodAmount(parseFloat(e.target.value) || 0)}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        setUserEditedCod(isNaN(val) ? 0 : val);
+                      }}
                       className="w-full bg-white border border-emerald-300 rounded-lg px-4 py-2.5 text-lg font-bold text-emerald-800"
                     />
                     <p className="text-[11px] text-emerald-700">
-                      COD Fee: 1% ({formatCurrency(pricing.codFee)}) will be deducted upon settlement.
+                      COD Fee: {codRate}% ({formatCurrency(dynamicCodFee)}) will be deducted upon settlement.
                     </p>
                   </div>
                 )}
@@ -736,7 +897,7 @@ function CreateParcelContent() {
                     )}
                     {pricing.codFee > 0 && (
                       <div className="flex justify-between">
-                        <span>COD Collection Fee (1%):</span>
+                        <span>COD Collection Fee ({pricing.breakdown.codPercentage}%):</span>
                         <strong className="text-slate-900">{formatCurrency(pricing.codFee)}</strong>
                       </div>
                     )}

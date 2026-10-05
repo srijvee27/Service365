@@ -61,10 +61,13 @@ export default function RootLayout({
           </div>
         )}
 
-        {/* Development Payment Sandbox Banner */}
+        {/* Payment Status Banner */}
         {process.env.PAYMENT_MODE === "mock" && (
-          <div className="bg-blue-600 text-white px-4 py-1 text-xs font-medium flex items-center justify-center gap-2">
-            <span>🛠️ Development Payment Mode (Sandbox Simulator Active)</span>
+          <div className="bg-sky-100/80 border-b border-sky-200/80 text-sky-950 px-4 py-1.5 text-xs font-medium flex items-center justify-center gap-2">
+            <svg className="w-3.5 h-3.5 text-sky-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span className="font-semibold tracking-tight">Online Payment System Coming Soon</span>
           </div>
         )}
 

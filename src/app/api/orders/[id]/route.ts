@@ -283,8 +283,10 @@ export async function PATCH(
           });
 
           if (order.merchant?.wallet) {
-            const netCredit = Number(order.codAmount) - Number(order.codFee) - Number(order.totalCharge);
-            const newBalance = Number(order.merchant.wallet.availableBalance) + Math.max(0, netCredit);
+            const deliveryCharge = Number(order.baseCharge) + Number(order.weightCharge);
+            const totalDeductions = deliveryCharge + Number(order.codFee);
+            const netCredit = Math.max(0, Number(order.codAmount) - totalDeductions);
+            const newBalance = Number(order.merchant.wallet.availableBalance) + netCredit;
 
             await tx.wallet.update({
               where: { merchantId: order.merchantId },

@@ -568,10 +568,18 @@ export const BANGLADESH_DISTRICTS: BangladeshDistrictData[] = [
 ];
 
 export function getDistrictByName(name: string) {
-  return BANGLADESH_DISTRICTS.find(d => d.name.toLowerCase() === name.toLowerCase());
+  if (!name) return undefined;
+  const normalized = name.toLowerCase().trim();
+  if (normalized === "dhaka") return BANGLADESH_DISTRICTS.find(d => d.name === "Dhaka City");
+  if (normalized === "chittagong") return BANGLADESH_DISTRICTS.find(d => d.name === "Chattogram");
+  return BANGLADESH_DISTRICTS.find(d => d.name.toLowerCase() === normalized);
 }
 
 export function getZoneByDistrict(districtName: string): "INSIDE_DHAKA" | "DHAKA_SUBURB" | "OUTSIDE_DHAKA" {
+  if (!districtName) return "OUTSIDE_DHAKA";
+  const normalized = districtName.toLowerCase().trim();
+  if (normalized === "dhaka" || normalized === "dhaka city") return "INSIDE_DHAKA";
   const d = getDistrictByName(districtName);
   return d ? d.zoneType : "OUTSIDE_DHAKA";
 }
+

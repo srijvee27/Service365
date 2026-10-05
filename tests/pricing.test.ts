@@ -72,4 +72,27 @@ describe("Pricing Engine", () => {
     expect(express.baseCharge).toBe(regular.baseCharge + 40);
     expect(express.estimatedHours).toBeLessThan(regular.estimatedHours);
   });
+
+  test("calculates master scenario: Inside to Outside Dhaka, 2.5kg, 2500 BDT declared value with 1% COD", () => {
+    const result = calculateDeliveryPricing({
+      fromZone: "INSIDE_DHAKA",
+      toZone: "OUTSIDE_DHAKA",
+      weightKg: 2.5,
+      declaredValue: 2500,
+      serviceType: "REGULAR",
+      paymentMethod: "COD",
+      customRule: {
+        baseCharge: 130,
+        extraPerKg: 25,
+        codPercentage: 1.0,
+      },
+    });
+
+    expect(result.baseCharge).toBe(130);
+    expect(result.weightCharge).toBe(50); // ceil(2.5 - 1.0) = 2kg extra * 25 = 50
+    expect(result.deliveryCharge).toBe(180); // 130 + 50
+    expect(result.codFee).toBe(27); // Math.round((2500 + 180) * 0.01) = 27
+    expect(result.totalCharge).toBe(207); // 180 + 27
+    expect(result.recommendedCodAmount).toBe(2707); // 2500 + 180 + 27
+  });
 });
